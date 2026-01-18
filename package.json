@@ -1,12 +1,8 @@
 {
-  "name": "discord-ban-sync",
+  "name": "ban-sync-bot",
   "version": "1.0.0",
-  "type": "commonjs",
-  "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
-  },
-  "dependencies": {
-    "discord.js": "^14.15.3"
   }
 }
