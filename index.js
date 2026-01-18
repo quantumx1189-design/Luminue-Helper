@@ -3,44 +3,57 @@ const { Client, GatewayIntentBits } = require("discord.js");
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildBans
+    GatewayIntentBits.GuildModeration
   ]
 });
 
-/*
-  SERVERS INCLUDED IN THE GLOBAL BAN NETWORK
-  To add another server later:
-  1. Copy a line
-  2. Paste it
-  3. Change the name + ID
-*/
+const GUILD_IDS = [
+  "1369785660512272444",
+  "1221977896135168080",
+  "1440469850009899102",
+  "1461474214635769961"
+];
 
-const GUILDS = {
-  YOSHI_TRANSIT: "1369785660512272444",
-  LUMINUE: "1221977896135168080",
-  THEHIDEOUT_BLOXBURG: "1440469850009899102",
-  KAMARI_CONTAINMENT: "1461474214635769961"
-};
-
-client.on("ready", () => {
+client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
-});
 
-client.on("guildBanAdd", async (ban) => {
-  for (const guildId of Object.values(GUILDS)) {
-    if (guildId === ban.guild.id) continue;
+  const allBans = new Map();
 
-    const guild = client.guilds.cache.get(guildId);
-    if (!guild) continue;
-
+  // Step 1: Collect all bans
+  for (const guildId of GUILD_IDS) {
     try {
-      await guild.members.ban(ban.user.id, {
-        reason: "Global ban sync"
+      const guild = await client.guilds.fetch(guildId);
+      const bans = await guild.bans.fetch();
+
+      bans.forEach(ban => {
+        allBans.set(ban.user.id, ban.reason || "Synced ban");
       });
-    } catch {
-      // silently ignore failures (missing perms, already banned, etc.)
+
+      console.log(`Fetched bans from ${guild.name}`);
+    } catch (err) {
+      console.error(`Failed fetching bans from ${guildId}`, err.message);
     }
   }
+
+  // Step 2: Apply bans everywhere
+  for (const guildId of GUILD_IDS) {
+    try {
+      const guild = await client.guilds.fetch(guildId);
+      const bans = await guild.bans.fetch();
+
+      for (const [userId, reason] of allBans) {
+        if (!bans.has(userId)) {
+          await guild.members.ban(userId, { reason });
+          console.log(`Banned ${userId} in ${guild.name}`);
+        }
+      }
+    } catch (err) {
+      console.error(`Failed syncing bans to ${guildId}`, err.message);
+    }
+  }
+
+  console.log("Ban sync complete. Shutting down.");
+  process.exit(0);
 });
 
-client.login(process.env.TOKEN);
+client.login(process.env.DISCORD_TOKEN);
