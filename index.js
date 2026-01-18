@@ -1,40 +1,37 @@
 const { Client, GatewayIntentBits } = require("discord.js");
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildModeration
-  ]
-});
+const TOKEN = process.env.DISCORD_TOKEM;
+if (!TOKEN) {
+  console.error("Missing DISCORD_TOKEM env var");
+  process.exit(1);
+}
 
-const BAN_REASON = "Banned in a partner server.";
-const UNBAN_REASON = "Unbanned in all partner servers.";
+async function run() {
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildModeration
+    ]
+  });
 
-client.once("ready", async () => {
+  await client.login(TOKEN);
   console.log(`Logged in as ${client.user.tag}`);
 
   const guilds = [...client.guilds.cache.values()];
 
-  // Map: userId -> number of servers they are banned in
-  const banCount = new Map();
-
-  // Step 1: Count bans across all servers
   for (const guild of guilds) {
-    try {
-      const bans = await guild.bans.fetch();
-      bans.forEach(ban => {
-        banCount.set(
-          ban.user.id,
-          (banCount.get(ban.user.id) || 0) + 1
-        );
-      });
-      console.log(`Fetched bans from ${guild.name}`);
-    } catch (err) {
-      console.error(`Failed fetching bans from ${guild.name}`, err.message);
-    }
+    const bans = await guild.bans.fetch();
+    console.log(`${guild.name}: ${bans.size} bans`);
   }
 
-  // Step 2: Sync bans and unbans
+  await client.destroy();
+  process.exit(0);
+}
+
+run().catch(err => {
+  console.error("Fatal error:", err);
+  process.exit(1);
+});  // Step 2: Sync bans and unbans
   for (const guild of guilds) {
     try {
       const bans = await guild.bans.fetch();
