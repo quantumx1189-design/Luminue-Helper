@@ -14,19 +14,21 @@ const GUILD_IDS = [
   "1461474214635769961"
 ];
 
+const BAN_REASON = "Banned in a partner server.";
+
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  const allBans = new Map();
+  const allBans = new Set();
 
-  // Step 1: Collect all bans
+  // Step 1: Collect all banned user IDs
   for (const guildId of GUILD_IDS) {
     try {
       const guild = await client.guilds.fetch(guildId);
       const bans = await guild.bans.fetch();
 
       bans.forEach(ban => {
-        allBans.set(ban.user.id, ban.reason || "Synced ban");
+        allBans.add(ban.user.id);
       });
 
       console.log(`Fetched bans from ${guild.name}`);
@@ -35,15 +37,15 @@ client.once("ready", async () => {
     }
   }
 
-  // Step 2: Apply bans everywhere
+  // Step 2: Apply bans everywhere with a fixed reason
   for (const guildId of GUILD_IDS) {
     try {
       const guild = await client.guilds.fetch(guildId);
       const bans = await guild.bans.fetch();
 
-      for (const [userId, reason] of allBans) {
+      for (const userId of allBans) {
         if (!bans.has(userId)) {
-          await guild.members.ban(userId, { reason });
+          await guild.members.ban(userId, { reason: BAN_REASON });
           console.log(`Banned ${userId} in ${guild.name}`);
         }
       }
