@@ -1,40 +1,16 @@
-const { Client, GatewayIntentBits } = require("discord.js");
-const express = require("express");
-
-const TOKEN = process.env.DISCORD_TOKEN;
-if (!TOKEN) {
-  console.error("DISCORD_TOKEN is missing. Set it in Fly secrets.");
-  process.exit(1);
-}
-
-const PORT = process.env.PORT || 3000;
-const BAN_REASON = "Banned in a partner server.";
-const UNBAN_REASON = "Unbanned in all partner servers.";
-
-let running = false;
-
-const app = express();
-
-app.get("/", async (req, res) => {
-  if (running) return res.status(202).send("Sync already running");
-  running = true;
-
-  try {
-    await runOnce();
-    res.send("Sync complete");
-  } catch (e) {
-    console.error(e);
-    res.status(500).send("Sync failed");
-  } finally {
-    running = false;
+{
+  "name": "ban-sync-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "express": "^4.19.2"
   }
-});
-
-app.listen(PORT, () => {
-  console.log("Wake endpoint listening on", PORT);
-});
-
-async function runOnce() {
+}async function runOnce() {
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
