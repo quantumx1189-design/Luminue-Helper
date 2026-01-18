@@ -1,4 +1,5 @@
 const { Client, GatewayIntentBits } = require("discord.js");
+const express = require("express");
 
 const client = new Client({
   intents: [
@@ -7,15 +8,21 @@ const client = new Client({
   ]
 });
 
-const BAN_REASON = "Banned from the United Group Alliance - Banned from a partner server.";
-const UNBAN_REASON = "Unbanned in all partner servers. United Group Alliance.";
+const BAN_REASON = "Banned in a partner server.";
+const UNBAN_REASON = "Unbanned in all partner servers.";
+const PORT = process.env.PORT || 3000;
 
-client.once("ready", async () => {
-  console.log(`Logged in as ${client.user.tag}`);
+const app = express();
 
+// Tiny HTTP endpoint to let a ping service wake the bot
+app.get("/", async (req, res) => {
+  console.log("Ping received. Running ban/unban sync...");
+  await syncBans();
+  res.send("Ban/unban sync complete.");
+});
+
+async function syncBans() {
   const guilds = [...client.guilds.cache.values()];
-
-  // Map: userId -> number of servers they are banned in
   const banCount = new Map();
 
   // Step 1: Count bans across all servers
@@ -23,10 +30,7 @@ client.once("ready", async () => {
     try {
       const bans = await guild.bans.fetch();
       bans.forEach(ban => {
-        banCount.set(
-          ban.user.id,
-          (banCount.get(ban.user.id) || 0) + 1
-        );
+        banCount.set(ban.user.id, (banCount.get(ban.user.id) || 0) + 1);
       });
       console.log(`Fetched bans from ${guild.name}`);
     } catch (err) {
@@ -34,12 +38,12 @@ client.once("ready", async () => {
     }
   }
 
-  // Step 2: Sync bans and unbans
+  // Step 2: Apply bans and unbans
   for (const guild of guilds) {
     try {
       const bans = await guild.bans.fetch();
 
-      // Apply bans
+      // Bans
       for (const [userId, count] of banCount) {
         if (count > 0 && !bans.has(userId)) {
           await guild.members.ban(userId, { reason: BAN_REASON });
@@ -47,7 +51,7 @@ client.once("ready", async () => {
         }
       }
 
-      // Apply unbans
+      // Unbans
       for (const ban of bans.values()) {
         if (!banCount.has(ban.user.id)) {
           await guild.members.unban(ban.user.id, { reason: UNBAN_REASON });
@@ -60,8 +64,16 @@ client.once("ready", async () => {
     }
   }
 
-  console.log("Ban and unban sync complete. Shutting down.");
-  process.exit(0);
+  console.log("Ban/unban sync complete.");
+}
+
+client.once("ready", () => {
+  console.log(`Logged in as ${client.user.tag}`);
+});
+
+// Start HTTP server
+app.listen(PORT, () => {
+  console.log(`HTTP server running on port ${PORT}`);
 });
 
 client.login(process.env.DISCORD_TOKEN);
