@@ -7,13 +7,6 @@ const client = new Client({
   ]
 });
 
-const GUILD_IDS = [
-  "1369785660512272444",
-  "1221977896135168080",
-  "1440469850009899102",
-  "1461474214635769961"
-];
-
 const BAN_REASON = "Banned in a partner server.";
 
 client.once("ready", async () => {
@@ -21,26 +14,22 @@ client.once("ready", async () => {
 
   const allBans = new Set();
 
-  // Step 1: Collect all banned user IDs
-  for (const guildId of GUILD_IDS) {
+  const guilds = client.guilds.cache;
+
+  // Step 1: Collect all banned users from all joined servers
+  for (const guild of guilds.values()) {
     try {
-      const guild = await client.guilds.fetch(guildId);
       const bans = await guild.bans.fetch();
-
-      bans.forEach(ban => {
-        allBans.add(ban.user.id);
-      });
-
+      bans.forEach(ban => allBans.add(ban.user.id));
       console.log(`Fetched bans from ${guild.name}`);
     } catch (err) {
-      console.error(`Failed fetching bans from ${guildId}`, err.message);
+      console.error(`Failed fetching bans from ${guild.name}`, err.message);
     }
   }
 
-  // Step 2: Apply bans everywhere with a fixed reason
-  for (const guildId of GUILD_IDS) {
+  // Step 2: Apply bans everywhere
+  for (const guild of guilds.values()) {
     try {
-      const guild = await client.guilds.fetch(guildId);
       const bans = await guild.bans.fetch();
 
       for (const userId of allBans) {
@@ -50,7 +39,7 @@ client.once("ready", async () => {
         }
       }
     } catch (err) {
-      console.error(`Failed syncing bans to ${guildId}`, err.message);
+      console.error(`Failed syncing bans to ${guild.name}`, err.message);
     }
   }
 
@@ -59,3 +48,4 @@ client.once("ready", async () => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+
