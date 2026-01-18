@@ -1,8 +1,3 @@
 {
-  "name": "Luminue-helper",
-  "version": "1.0.0",
-  "type": "module",
-  "scripts": {
-    "start": "node index.js"
-  }
+  "type": "module"
 }
