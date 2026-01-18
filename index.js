@@ -1,73 +1,37 @@
-// index.js
 const { Client, GatewayIntentBits } = require("discord.js");
-const express = require("express");
 
-const TOKEN = process.env.DISCORD_TOKEN;
-if (!TOKEN) {
-  console.error("Missing DISCORD_TOKEN env var");
-  process.exit(1);
-}
-
-const PORT = process.env.PORT || 3000;
-
-const BAN_REASON = "Banned in a partner server. Blacklisted from united group alliance.";
-const UNBAN_REASON = "Unbanned in all partner servers.";
-
-let syncRunning = false;
-
-const app = express();
-
-/**
- * Wake endpoint
- * Hitting this URL triggers a single sync run.
- */
-app.get("/", async (req, res) => {
-  if (syncRunning) {
-    console.log("Sync already running");
-    return res.status(202).send("Sync already running");
-  }
-
-  syncRunning = true;
-  console.log("Ping received. Starting sync.");
-
-  try {
-    await runSyncOnce();
-    console.log("Sync finished successfully.");
-    res.send("Ban / unban sync complete.");
-  } catch (err) {
-    console.error("Sync failed:", err);
-    res.status(500).send("Sync failed");
-  } finally {
-    syncRunning = false;
-  }
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildBans
+  ]
 });
 
-app.listen(PORT, () => {
-  console.log(`HTTP server listening on port ${PORT}`);
-});
+// CONFIG
+const TOKEN = process.env.BOT_TOKEN; // your bot token in Fly secrets
+const MAIN_GUILD_ID = "1221977896135168080";
 
-/**
- * One-shot Discord sync
- */
-async function runSyncOnce() {
-  const client = new Client({
-    intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildModeration
-    ]
-  });
-
-  await client.login(TOKEN);
-  await waitForReady(client);
-
+client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  // Force-fetch all guilds the bot is in
-  const guildCollection = await client.guilds.fetch();
-  const guilds = [...guildCollection.values()];
+  try {
+    const guild = await client.guilds.fetch(MAIN_GUILD_ID);
 
-  console.log(`Found ${guilds.length} guild(s)`);
+    // THIS is where your await is now legal
+    const bans = await guild.bans.fetch();
+    console.log(`Fetched ${bans.size} bans from main guild`);
 
+    // Example loop (does nothing yet, just proves it works)
+    for (const [userId, ban] of bans) {
+      console.log(`Banned user: ${userId}`);
+    }
+
+  } catch (err) {
+    console.error("Error during ban fetch:", err);
+  }
+});
+
+client.login(TOKEN);
   // Map of userId -> count of guilds banning them
   const banCount = new Map();
 
