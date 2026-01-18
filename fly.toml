@@ -1,10 +1,10 @@
-# fly.toml app configuration file generated for luminue-helper on 2026-01-18T02:21:23Z
+# fly.toml app configuration file generated for luminue-helper on 2026-01-18T17:12:32Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
 app = 'luminue-helper'
-primary_region = 'iad'
+primary_region = 'cdg'
 
 [build]
 
