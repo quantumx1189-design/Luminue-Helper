@@ -8,16 +8,12 @@ if (!TOKEN) {
 
 const BAN_REASON =
   "Banned in a partner server. Blacklisted from United Group Alliance.";
-const UNBAN_REASON =
-  "Unbanned globally by alliance moderation.";
 
-// 🔴 OPTIONAL: put a user ID here to unban everywhere
-// Leave as null if you do NOT want to unban anyone
-const GLOBAL_UNBAN_USER_ID = null; 
-// example:
-// const GLOBAL_UNBAN_USER_ID = "123456789012345678";
+// Optional global unban
+// Set to a user ID string, or leave as null
+const GLOBAL_UNBAN_USER_ID = null;
 
-async function main() {
+async function run() {
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
@@ -26,7 +22,10 @@ async function main() {
   });
 
   await client.login(TOKEN);
-  await new Promise(resolve => client.once("ready", resolve));
+
+  await new Promise(resolve => {
+    client.once("ready", resolve);
+  });
 
   console.log(`Logged in as ${client.user.tag}`);
 
@@ -34,19 +33,18 @@ async function main() {
 
   // -------- OPTIONAL GLOBAL UNBAN --------
   if (GLOBAL_UNBAN_USER_ID) {
-    console.log(`Starting global unban for ${GLOBAL_UNBAN_USER_ID}`);
-
+    console.log(`Global unban for ${GLOBAL_UNBAN_USER_ID}`);
     for (const guild of guilds) {
       try {
-        await guild.members.unban(GLOBAL_UNBAN_USER_ID, UNBAN_REASON);
+        await guild.members.unban(GLOBAL_UNBAN_USER_ID);
         console.log(`Unbanned in ${guild.name}`);
-      } catch {
-        // ignore: not banned / missing perms
+      } catch (err) {
+        // Ignore: not banned or no perms
       }
     }
   }
 
-  // -------- BAN SYNC --------
+  // -------- COLLECT ALL BANS --------
   const bannedUsers = new Set();
 
   for (const guild of guilds) {
@@ -61,130 +59,7 @@ async function main() {
     }
   }
 
-  for (const guild of guilds) {
-    let existingBans;
-    try {
-      existingBans = await guild.bans.fetch();
-    } catch {
-      continue;
-    }
-
-    for (const userId of bannedUsers) {
-      if (!existingBans.has(userId)) {
-        try {
-          await guild.members.ban(userId, { reason: BAN_REASON });
-          console.log(`Banned ${userId} in ${guild.name}`);
-        } catch {
-          // ignore permission/rate issues
-        }
-      }
-    }
-  }
-
-  console.log("Sync complete. Exiting.");
-  await client.destroy();
-  process.exit(0);
-}
-
-main().catch(err => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});}
-console.log(Fetched bans from ${guild.name});
-} catch (err) {
-console.error(Failed fetching bans from ${guild.name}: ${err.message});
-}
-}
-
-for (const guild of guilds) {
-let existingBans;
-try {
-existingBans = await guild.bans.fetch();
-} catch {
-continue;
-}
-
-for (const userId of bannedUsers) {  
-  if (!existingBans.has(userId)) {  
-    try {  
-      await guild.members.ban(userId, { reason: BAN_REASON });  
-      console.log(`Banned ${userId} in ${guild.name}`);  
-    } catch (err) {  
-      console.error(`Failed banning ${userId} in ${guild.name}: ${err.message}`);  
-    }  
-  }  
-}
-
-}
-
-console.log("Ban sync complete. Exiting.");
-await client.destroy();
-process.exit(0);
-}
-
-main().catch(err => {
-console.error("Fatal error:", err);
-process.exit(1);
-});      opt.setName("user_id")
-        .setDescription("The Discord user ID to unban")
-        .setRequired(true)
-    );
-
-  const rest = new REST({ version: "10" }).setToken(TOKEN);
-  await rest.put(
-    Routes.applicationCommands(client.user.id),
-    { body: [command.toJSON()] }
-  );
-
-  console.log("Slash command registered");
-
-  // -------- HANDLE COMMAND --------
-  client.on("interactionCreate", async interaction => {
-    if (!interaction.isChatInputCommand()) return;
-    if (interaction.commandName !== "global-unban") return;
-
-    if (!interaction.memberPermissions.has(PermissionsBitField.Flags.BanMembers)) {
-      return interaction.reply({
-        content: "You need **Ban Members** permission to use this.",
-        ephemeral: true
-      });
-    }
-
-    const userId = interaction.options.getString("user_id");
-    let success = 0;
-    let failed = 0;
-
-    for (const guild of client.guilds.cache.values()) {
-      try {
-        await guild.members.unban(userId, UNBAN_REASON);
-        success++;
-      } catch {
-        failed++;
-      }
-    }
-
-    await interaction.reply({
-      content: `Global unban complete.\nUnbanned in ${success} servers.\nFailed in ${failed} servers.`,
-      ephemeral: true
-    });
-  });
-
-  // -------- BAN SYNC (ONE SHOT) --------
-  const guilds = Array.from(client.guilds.cache.values());
-  const bannedUsers = new Set();
-
-  for (const guild of guilds) {
-    try {
-      const bans = await guild.bans.fetch();
-      for (const ban of bans.values()) {
-        bannedUsers.add(ban.user.id);
-      }
-      console.log(`Fetched bans from ${guild.name}`);
-    } catch (err) {
-      console.error(`Failed fetching bans from ${guild.name}: ${err.message}`);
-    }
-  }
-
+  // -------- APPLY BANS EVERYWHERE --------
   for (const guild of guilds) {
     let existingBans;
     try {
@@ -199,38 +74,7 @@ process.exit(1);
           await guild.members.ban(userId, { reason: BAN_REASON });
           console.log(`Banned ${userId} in ${guild.name}`);
         } catch (err) {
-          console.error(`Failed banning ${userId} in ${guild.name}: ${err.message}`);
-        }
-      }
-    }
-  }
-
-  console.log("Ban sync complete. Bot staying online for commands.");
-}
-
-main().catch(err => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});    } catch (err) {
-      console.error(`Failed fetching bans from ${guild.name}: ${err.message}`);
-    }
-  }
-
-  for (const guild of guilds) {
-    let existingBans;
-    try {
-      existingBans = await guild.bans.fetch();
-    } catch {
-      continue;
-    }
-
-    for (const userId of bannedUsers) {
-      if (!existingBans.has(userId)) {
-        try {
-          await guild.members.ban(userId, { reason: BAN_REASON });
-          console.log(`Banned ${userId} in ${guild.name}`);
-        } catch (err) {
-          console.error(`Failed banning ${userId} in ${guild.name}: ${err.message}`);
+          // Ignore permission / hierarchy issues
         }
       }
     }
@@ -241,7 +85,7 @@ main().catch(err => {
   process.exit(0);
 }
 
-main().catch(err => {
+run().catch(err => {
   console.error("Fatal error:", err);
   process.exit(1);
 });
