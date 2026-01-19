@@ -1,40 +1,95 @@
-Index
-
 const { Client, GatewayIntentBits } = require("discord.js");
 
 const TOKEN = process.env.DISCORD_TOKEN;
 if (!TOKEN) {
-console.error("Missing DISCORD_TOKEN");
-process.exit(1);
+  console.error("Missing DISCORD_TOKEN");
+  process.exit(1);
 }
 
-const BAN_REASON = "Banned in a partner server. Blacklisted from United Group Alliance.";
+const BAN_REASON =
+  "Banned in a partner server. Blacklisted from United Group Alliance.";
+const UNBAN_REASON =
+  "Unbanned globally by alliance moderation.";
+
+// 🔴 OPTIONAL: put a user ID here to unban everywhere
+// Leave as null if you do NOT want to unban anyone
+const GLOBAL_UNBAN_USER_ID = null; 
+// example:
+// const GLOBAL_UNBAN_USER_ID = "123456789012345678";
 
 async function main() {
-const client = new Client({
-intents: [
-GatewayIntentBits.Guilds,
-GatewayIntentBits.GuildModeration
-]
-});
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildModeration
+    ]
+  });
 
-await client.login(TOKEN);
+  await client.login(TOKEN);
+  await new Promise(resolve => client.once("ready", resolve));
 
-await new Promise(resolve => {
-client.once("ready", resolve);
-});
+  console.log(`Logged in as ${client.user.tag}`);
 
-console.log(Logged in as ${client.user.tag});
+  const guilds = Array.from(client.guilds.cache.values());
 
-const guilds = Array.from(client.guilds.cache.values());
-const bannedUsers = new Set();
+  // -------- OPTIONAL GLOBAL UNBAN --------
+  if (GLOBAL_UNBAN_USER_ID) {
+    console.log(`Starting global unban for ${GLOBAL_UNBAN_USER_ID}`);
 
-for (const guild of guilds) {
-try {
-const bans = await guild.bans.fetch();
-for (const ban of bans.values()) {
-bannedUsers.add(ban.user.id);
+    for (const guild of guilds) {
+      try {
+        await guild.members.unban(GLOBAL_UNBAN_USER_ID, UNBAN_REASON);
+        console.log(`Unbanned in ${guild.name}`);
+      } catch {
+        // ignore: not banned / missing perms
+      }
+    }
+  }
+
+  // -------- BAN SYNC --------
+  const bannedUsers = new Set();
+
+  for (const guild of guilds) {
+    try {
+      const bans = await guild.bans.fetch();
+      for (const ban of bans.values()) {
+        bannedUsers.add(ban.user.id);
+      }
+      console.log(`Fetched bans from ${guild.name}`);
+    } catch (err) {
+      console.error(`Failed fetching bans from ${guild.name}: ${err.message}`);
+    }
+  }
+
+  for (const guild of guilds) {
+    let existingBans;
+    try {
+      existingBans = await guild.bans.fetch();
+    } catch {
+      continue;
+    }
+
+    for (const userId of bannedUsers) {
+      if (!existingBans.has(userId)) {
+        try {
+          await guild.members.ban(userId, { reason: BAN_REASON });
+          console.log(`Banned ${userId} in ${guild.name}`);
+        } catch {
+          // ignore permission/rate issues
+        }
+      }
+    }
+  }
+
+  console.log("Sync complete. Exiting.");
+  await client.destroy();
+  process.exit(0);
 }
+
+main().catch(err => {
+  console.error("Fatal error:", err);
+  process.exit(1);
+});}
 console.log(Fetched bans from ${guild.name});
 } catch (err) {
 console.error(Failed fetching bans from ${guild.name}: ${err.message});
