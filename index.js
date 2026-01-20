@@ -4,36 +4,105 @@ const { Client, GatewayIntentBits } = require("discord.js");
 
 const TOKEN = process.env.DISCORD_TOKEN;
 if (!TOKEN) {
-  console.error("Missing DISCORD_TOKEN (set as Fly secret).");
+  console.error("Missing DISCORD_TOKEN.");
   process.exit(1);
 }
 
-// File used to persist ban provenance and blocked guilds
 const DATA_FILE = path.resolve(__dirname, "bans.json");
-
-// Config — via environment variables
-const EMERGENCY_REVERT_GUILD = process.env.EMERGENCY_REVERT_GUILD || null;
-const GLOBAL_UNBAN_USER_ID = process.env.GLOBAL_UNBAN_USER_ID || null;
-const UNBAN_LIMIT = parseInt(process.env.UNBAN_LIMIT || "100", 10);
-const REVERT_LIMIT = parseInt(process.env.REVERT_LIMIT || "1000", 10);
 const ALLIANCE_NAME = "United Group Alliance";
 
-// --- Helper Functions ---
-
-function ensureDataFile() {
-  if (!fs.existsSync(DATA_FILE)) {
-    const initial = { users: {}, blockedGuilds: [] };
-    fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
-  }
+// --- Helpers ---
+function loadData() {
+  if (!fs.existsSync(DATA_FILE)) return { users: {}, blockedGuilds: [] };
+  return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
 }
 
-function loadData() {
-  ensureDataFile();
-  try {
-    const raw = fs.readFileSync(DATA_FILE, "utf8");
-    return JSON.parse(raw);
-  } catch (err) {
-    console.error("Failed to read or parse bans.json:", err);
+function saveData(data) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+// --- Main ---
+async function main() {
+  const client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildModeration]
+  });
+
+  await client.login(TOKEN);
+  await new Promise(resolve => client.once("ready", resolve));
+  console.log(`Logged in as ${client.user.tag}`);
+
+  const data = loadData();
+  const guilds = Array.from(client.guilds.cache.values());
+  const unbanQueue = []; // Users to be removed from all servers
+
+  // ---------- STEP 1: SYNC BANS & DETECT UNBANS ----------
+  for (const guild of guilds) {
+    if (data.blockedGuilds?.includes(guild.id)) continue;
+
+    try {
+      const bans = await guild.bans.fetch();
+      const currentBanIds = Array.from(bans.keys());
+
+      // A. Check for NEW bans
+      bans.forEach(ban => {
+        if (!data.users[ban.user.id]) {
+          data.users[ban.user.id] = {
+            sourceGuildId: guild.id,
+            sourceGuildName: guild.name,
+            timestamp: Date.now()
+          };
+          console.log(`New ban detected: ${ban.user.tag} in ${guild.name}`);
+        }
+      });
+
+      // B. Check for UNBANS (If user is in JSON for this guild but NOT in the live ban list)
+      for (const [userId, info] of Object.entries(data.users)) {
+        if (info.sourceGuildId === guild.id && !currentBanIds.includes(userId)) {
+          console.log(`Unban detected at source: ${userId} was unbanned from ${guild.name}`);
+          unbanQueue.push(userId);
+          delete data.users[userId]; // Remove from our database
+        }
+      }
+    } catch (err) {
+      console.error(`Failed to sync ${guild.name}:`, err.message);
+    }
+  }
+
+  // ---------- STEP 2: APPLY UPDATES TO ALL GUILDS ----------
+  for (const guild of guilds) {
+    // 1. Process Unbans (Remove bans for anyone in the unbanQueue)
+    for (const userId of unbanQueue) {
+      try {
+        await guild.bans.remove(userId, `Source unban sync: ${ALLIANCE_NAME}`);
+        console.log(`Unbanned ${userId} in ${guild.name} (Synced)`);
+      } catch (err) { /* Not banned here, ignore */ }
+    }
+
+    // 2. Process New Bans (Apply bans from our database)
+    const existingBans = await guild.bans.fetch().catch(() => new Map());
+    for (const [userId, info] of Object.entries(data.users)) {
+      if (existingBans.has(userId)) continue;
+
+      const sourceName = info.sourceGuildName || "Unknown Partner";
+      const reason = `Partner ban: ${sourceName}. ${ALLIANCE_NAME}.`;
+
+      try {
+        await guild.members.ban(userId, { reason });
+        console.log(`Banned ${userId} in ${guild.name} (Source: ${sourceName})`);
+      } catch (err) { /* Permission error */ }
+    }
+  }
+
+  saveData(data);
+  console.log("Full sync (Bans & Unbans) complete.");
+  await client.destroy();
+  process.exit(0);
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
     return { users: {}, blockedGuilds: [] };
   }
 }
