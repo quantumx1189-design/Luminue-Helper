@@ -1,39 +1,52 @@
-const fs = require("fs");
-const path = require("path");
-const { Client, GatewayIntentBits } = require("discord.js");
+  // ---------- NORMAL SYNC MODE ----------
+  console.log("Starting normal ban sync.");
 
-const TOKEN = process.env.DISCORD_TOKEN;
-if (!TOKEN) {
-  console.error("Missing DISCORD_TOKEN (set as Fly secret).");
-  process.exit(1);
-}
+  // Step 1: Collect bans and record BOTH ID and Name
+  for (const guild of guilds) {
+    if (data.blockedGuilds?.includes(guild.id)) continue;
 
-const DATA_FILE = path.resolve(__dirname, "bans.json");
-
-// Config
-const EMERGENCY_REVERT_GUILD = process.env.EMERGENCY_REVERT_GUILD || null;
-const GLOBAL_UNBAN_USER_ID = process.env.GLOBAL_UNBAN_USER_ID || null;
-const UNBAN_LIMIT = parseInt(process.env.UNBAN_LIMIT || "100", 10);
-const REVERT_LIMIT = parseInt(process.env.REVERT_LIMIT || "1000", 10);
-const ALLIANCE_NAME = "United Group Alliance";
-
-function ensureDataFile() {
-  if (!fs.existsSync(DATA_FILE)) {
-    const initial = { users: {}, blockedGuilds: [] };
-    fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
+    try {
+      const bans = await guild.bans.fetch();
+      bans.forEach(ban => {
+        // Record if the user isn't tracked OR if we are missing the source name
+        if (!data.users[ban.user.id] || !data.users[ban.user.id].sourceGuildName) {
+          data.users[ban.user.id] = {
+            sourceGuildId: guild.id,
+            sourceGuildName: guild.name, // NEW: Capture the server name
+            timestamp: Date.now()
+          };
+        }
+      });
+      console.log(`Synced ${bans.size} bans from ${guild.name}`);
+    } catch (err) {
+      console.error(`Failed fetching bans from ${guild.name}:`, err.message);
+    }
   }
-}
 
-function loadData() {
-  ensureDataFile();
-  try {
-    const raw = fs.readFileSync(DATA_FILE, "utf8");
-    return JSON.parse(raw);
-  } catch (err) {
-    console.error("Failed to read or parse bans.json:", err);
-    return { users: {}, blockedGuilds: [] };
+  // Step 2: Apply bans using the saved name from your JSON data
+  for (const guild of guilds) {
+    let existing;
+    try {
+      existing = await guild.bans.fetch();
+    } catch (err) { continue; }
+
+    for (const userId of Object.keys(data.users)) {
+      if (existing.has(userId)) continue;
+
+      const info = data.users[userId];
+      
+      // Use the saved name from our JSON; fallback to cache or 'Unknown'
+      const sourceName = info.sourceGuildName || "Unknown Partner";
+      const reason = `Partner ban: ${sourceName} (${info.sourceGuildId}). ${ALLIANCE_NAME}.`;
+
+      try {
+        await guild.members.ban(userId, { reason });
+        console.log(`Applied ban for ${userId} in ${guild.name} (Source: ${sourceName})`);
+      } catch (err) {
+        // Likely a hierarchy/permission issue
+      }
+    }
   }
-}
 
 function saveData(data) {
   try {
