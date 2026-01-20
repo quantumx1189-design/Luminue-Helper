@@ -1,0 +1,9 @@
+{
+  "users": {
+    "1234567890": {
+      "sourceGuild": "1111111111",
+      "timestamp": 1700000000
+    }
+  },
+  "blockedGuilds": []
+}
