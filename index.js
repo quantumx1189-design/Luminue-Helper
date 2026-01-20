@@ -1,40 +1,93 @@
 const { Client, GatewayIntentBits } = require("discord.js");
-const fs = require("fs");
 
 const TOKEN = process.env.DISCORD_TOKEN;
-const BAN_REASON = "Banned in a partner server. United Group Alliance.";
-
-const DATA_FILE = "./bans.json";
-
-// ===== emergency config =====
-// set this to a guild ID to revert ALL bans caused by that guild
-// set to null for normal operation
-const EMERGENCY_REVERT_GUILD = null;
-// ============================
-
-if (!fs.existsSync(DATA_FILE)) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify({ users: {}, blockedGuilds: [] }, null, 2));
+if (!TOKEN) {
+  console.error("Missing DISCORD_TOKEN");
+  process.exit(1);
 }
 
-const data = JSON.parse(fs.readFileSync(DATA_FILE));
+const ALLIANCE_NAME = "United Group Alliance";
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildModeration
-  ]
-});
+async function main() {
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildModeration
+    ]
+  });
 
-client.once("ready", async () => {
+  await client.login(TOKEN);
+  await new Promise(resolve => client.once("ready", resolve));
+
   console.log(`Logged in as ${client.user.tag}`);
 
-  const guilds = [...client.guilds.cache.values()];
+  const guilds = Array.from(client.guilds.cache.values());
 
-  // ===== EMERGENCY REVERT MODE =====
-  if (EMERGENCY_REVERT_GUILD) {
-    console.log(`EMERGENCY REVERT for guild ${EMERGENCY_REVERT_GUILD}`);
+  /**
+   * bannedUsers structure:
+   * {
+   *   userId: {
+   *     sourceGuildId: string
+   *   }
+   * }
+   */
+  const bannedUsers = {};
 
-    for (const guild of guilds) {
+  // STEP 1: Collect bans + where they came from
+  for (const guild of guilds) {
+    try {
+      const bans = await guild.bans.fetch();
+      for (const ban of bans.values()) {
+        // Only record first source to avoid overwrite wars
+        if (!bannedUsers[ban.user.id]) {
+          bannedUsers[ban.user.id] = {
+            sourceGuildId: guild.id
+          };
+        }
+      }
+      console.log(`Fetched bans from ${guild.name}`);
+    } catch (err) {
+      console.error(`Failed fetching bans from ${guild.name}: ${err.message}`);
+    }
+  }
+
+  // STEP 2: Apply missing bans to all other guilds
+  for (const guild of guilds) {
+    let existingBans;
+    try {
+      existingBans = await guild.bans.fetch();
+    } catch {
+      continue;
+    }
+
+    for (const userId of Object.keys(bannedUsers)) {
+      if (existingBans.has(userId)) continue;
+
+      const sourceGuildId = bannedUsers[userId].sourceGuildId;
+      const sourceGuild = client.guilds.cache.get(sourceGuildId);
+
+      const reason = sourceGuild
+        ? `Banned in partner server: ${sourceGuild.name} (${sourceGuildId}). ${ALLIANCE_NAME}.`
+        : `Banned in partner server: Unknown (${sourceGuildId}). ${ALLIANCE_NAME}.`;
+
+      try {
+        await guild.members.ban(userId, { reason });
+        console.log(`Banned ${userId} in ${guild.name}`);
+      } catch (err) {
+        console.error(`Failed banning ${userId} in ${guild.name}: ${err.message}`);
+      }
+    }
+  }
+
+  console.log("Ban sync complete. Exiting.");
+  await client.destroy();
+  process.exit(0);
+}
+
+main().catch(err => {
+  console.error("Fatal error:", err);
+  process.exit(1);
+});    for (const guild of guilds) {
       for (const [userId, info] of Object.entries(data.users)) {
         if (info.sourceGuild === EMERGENCY_REVERT_GUILD) {
           try {
