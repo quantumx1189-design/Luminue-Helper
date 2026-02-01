@@ -1,39 +1,137 @@
 const fs = require("fs");
 const path = require("path");
-const { Client, GatewayIntentBits } = require("discord.js");
+const { Client, GatewayIntentBits, AuditLogEvent } = require("discord.js");
 
-// Use the persistent path for Fly.io Volumes
+// CRITICAL: You must use a Fly Volume for this to work across restarts
 const DATA_FILE = "/app/data/bans.json"; 
 const TOKEN = process.env.DISCORD_TOKEN;
 const ALLIANCE_NAME = "United Group Alliance";
 
-if (!TOKEN) {
-  console.error("Missing DISCORD_TOKEN.");
-  process.exit(1);
-}
-
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function loadData() {
-  if (!fs.existsSync(DATA_FILE)) return { users: {}, blockedGuilds: [] };
-  try { return JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); } catch (e) { return { users: {}, blockedGuilds: [] }; }
+    if (!fs.existsSync(DATA_FILE)) return { users: {}, blockedGuilds: [] };
+    try { return JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); } catch (e) { return { users: {}, blockedGuilds: [] }; }
 }
 
 function saveData(data) {
-  try { fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2)); } catch (e) {}
+    try {
+        const dir = path.dirname(DATA_FILE);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    } catch (e) { console.error("Save failed:", e.message); }
 }
 
 async function runFullSync(client) {
-  console.log(">>> [START] Smart Syncing Reasons and Sources...");
-  const data = loadData();
-  const guilds = Array.from(client.guilds.cache.values());
-  const unbanQueue = [];
+    console.log(">>> [LOG] Investigating original ban sources...");
+    const data = loadData();
+    const guilds = Array.from(client.guilds.cache.values());
+    const unbanQueue = [];
 
-  // Step 1: Scan and identify ownership
-  for (const guild of guilds) {
-    if (data.blockedGuilds?.includes(guild.id)) continue;
-    try {
-      const bans = await guild.bans.fetch({ limit: 1000 });
+    for (const guild of guilds) {
+        if (data.blockedGuilds?.includes(guild.id)) continue;
+        try {
+            const bans = await guild.bans.fetch({ limit: 1000 });
+            const currentBanIds = Array.from(bans.keys());
+
+            for (const [userId, ban] of bans) {
+                // If we already know the source, don't change it.
+                if (data.users[userId]) continue;
+
+                // If new, record this guild as a 'candidate' source
+                data.users[userId] = {
+                    sourceGuildId: guild.id,
+                    sourceGuildName: guild.name,
+                    reason: ban.reason || "No reason provided",
+                    timestamp: Date.now() // Ideally, we'd fetch audit logs here, but that's heavy.
+                };
+                console.log(`[Source Locked] ${userId} assigned to ${guild.name}`);
+            }
+
+            // Sync Unbans: Only if this guild is the registered owner
+            for (const [userId, info] of Object.entries(data.users)) {
+                if (info.sourceGuildId === guild.id && !currentBanIds.includes(userId)) {
+                    console.log(`[Unban] Original source ${guild.name} cleared ${userId}.`);
+                    unbanQueue.push(userId);
+                    delete data.users[userId];
+                }
+            }
+        } catch (err) { console.error(`Failed guild ${guild.name}:`, err.message); }
+    }
+
+    // Apply bans to others
+    for (const guild of guilds) {
+        // Handle unbans first
+        for (const userId of unbanQueue) {
+            try { await guild.bans.remove(userId, `Alliance Sync: Source Unban.`); await sleep(300); } catch (e) {}
+        }
+
+        const existing = await guild.bans.fetch().catch(() => new Map());
+        for (const [userId, info] of Object.entries(data.users)) {
+            if (existing.has(userId) || info.sourceGuildId === guild.id) continue;
+
+            try {
+                const reason = `Source: ${info.sourceGuildName} | Reason: ${info.reason} | ${ALLIANCE_NAME}`;
+                await guild.bans.create(userId, { reason });
+                await sleep(300);
+            } catch (err) {
+                if (err.status === 429) await sleep((err.rawError?.retry_after || 5) * 1000);
+            }
+        }
+    }
+    saveData(data);
+}
+
+const client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildModeration]
+});
+
+client.once("ready", async () => {
+    console.log(`Bot active: ${client.user.tag}`);
+    await runFullSync(client);
+    setInterval(() => runFullSync(client), 6 * 60 * 60 * 1000);
+});
+
+// Live events are the most accurate source detection
+client.on("guildBanAdd", async (ban) => {
+    const data = loadData();
+    // If we already have a source for this user, a "secondary" ban just happened. Ignore it.
+    if (data.users[ban.user.id]) return;
+
+    data.users[ban.user.id] = {
+        sourceGuildId: ban.guild.id,
+        sourceGuildName: ban.guild.name,
+        reason: ban.reason || "No reason provided",
+        timestamp: Date.now()
+    };
+    saveData(data);
+
+    for (const [id, guild] of client.guilds.cache) {
+        if (id === ban.guild.id) continue;
+        try {
+            await sleep(300);
+            await guild.bans.create(ban.user.id, { 
+                reason: `Source: ${ban.guild.name} | Reason: ${ban.reason || "None"} | ${ALLIANCE_NAME}` 
+            });
+        } catch (e) {}
+    }
+});
+
+client.on("guildBanRemove", async (ban) => {
+    const data = loadData();
+    const info = data.users[ban.user.id];
+    // ONLY unban everywhere if the guild that just unbanned them is the original source.
+    if (info && info.sourceGuildId === ban.guild.id) {
+        delete data.users[ban.user.id];
+        saveData(data);
+        for (const [id, guild] of client.guilds.cache) {
+            if (id === ban.guild.id) continue;
+            try { await sleep(300); await guild.bans.remove(ban.user.id, `Source Unban Sync.`); } catch (e) {}
+        }
+    }
+});
+
+client.login(TOKEN);
       const currentBanIds = Array.from(bans.keys());
 
       bans.forEach(ban => {
