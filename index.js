@@ -2,173 +2,139 @@ const fs = require("fs");
 const path = require("path");
 const { Client, GatewayIntentBits } = require("discord.js");
 
-// --- 1. CONFIGURATION ---
+// Use the persistent path for Fly.io Volumes
+const DATA_FILE = "/app/data/bans.json"; 
 const TOKEN = process.env.DISCORD_TOKEN;
-const DATA_FILE = path.resolve(__dirname, "bans.json");
 const ALLIANCE_NAME = "United Group Alliance";
 
 if (!TOKEN) {
-  console.error("Error: DISCORD_TOKEN is missing. Please set it in Fly.io secrets.");
+  console.error("Missing DISCORD_TOKEN.");
   process.exit(1);
 }
 
-// Helper: Sleep function to prevent rate limits (throttling)
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- 2. DATA PERSISTENCE ---
 function loadData() {
   if (!fs.existsSync(DATA_FILE)) return { users: {}, blockedGuilds: [] };
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  } catch (err) {
-    return { users: {}, blockedGuilds: [] };
-  }
+  try { return JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); } catch (e) { return { users: {}, blockedGuilds: [] }; }
 }
 
 function saveData(data) {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-  } catch (err) {
-    console.error("Failed to save bans.json");
-  }
+  try { fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2)); } catch (e) {}
 }
 
-// --- 3. CORE SYNC LOGIC ---
 async function runFullSync(client) {
-  console.log(">>> [START] Reliable Full Sync (Throttled)...");
+  console.log(">>> [START] Smart Syncing Reasons and Sources...");
   const data = loadData();
   const guilds = Array.from(client.guilds.cache.values());
   const unbanQueue = [];
 
-  // Step A: Collect data from all servers
+  // Step 1: Scan and identify ownership
   for (const guild of guilds) {
     if (data.blockedGuilds?.includes(guild.id)) continue;
     try {
       const bans = await guild.bans.fetch({ limit: 1000 });
       const currentBanIds = Array.from(bans.keys());
 
-      // Update local database with new bans
       bans.forEach(ban => {
+        // ONLY set the source if we don't already have one for this user
+        // This prevents "random" servers from taking over ownership
         if (!data.users[ban.user.id]) {
           data.users[ban.user.id] = {
             sourceGuildId: guild.id,
             sourceGuildName: guild.name,
+            reason: ban.reason || "No reason provided", // Capture the REAL original reason
             timestamp: Date.now()
           };
+          console.log(`[New Record] ${ban.user.tag} belongs to source: ${guild.name}`);
         }
       });
 
-      // Detect if someone was unbanned at the source
+      // Check for unbans only for users OWNED by this guild
       for (const [userId, info] of Object.entries(data.users)) {
         if (info.sourceGuildId === guild.id && !currentBanIds.includes(userId)) {
+          console.log(`[Unban Detect] Source ${guild.name} unbanned ${userId}. Queueing global unban.`);
           unbanQueue.push(userId);
           delete data.users[userId];
         }
       }
     } catch (err) {
-      console.error(`[Fetch Error] ${guild.name}: ${err.message}`);
+      console.error(`Error scanning ${guild.name}: ${err.message}`);
     }
   }
 
-  // Step B: Apply updates with throttling to avoid capacity/rate limit issues
+  // Step 2: Apply bans using the ORIGINAL reason
   for (const guild of guilds) {
-    console.log(`Processing ${guild.name}...`);
-
-    // Process Unbans
     for (const userId of unbanQueue) {
-      try {
-        await guild.bans.remove(userId, `Sync: Source Unban. ${ALLIANCE_NAME}.`);
-        await sleep(300); // 0.3s pause
-      } catch (e) {}
+      try { await guild.bans.remove(userId, `Source Unban Sync. ${ALLIANCE_NAME}.`); await sleep(300); } catch (e) {}
     }
 
-    // Process Bans
-    // We fetch current bans again per-server to avoid duplicate API calls
     const existing = await guild.bans.fetch().catch(() => new Map());
     for (const [userId, info] of Object.entries(data.users)) {
-      if (existing.has(userId)) continue;
+      if (existing.has(userId) || info.sourceGuildId === guild.id) continue;
 
       try {
-        const reason = `Partner ban: ${info.sourceGuildName || "Unknown"}. ${ALLIANCE_NAME}.`;
+        // Use the original reason found at the source!
+        const reason = `Original Reason: ${info.reason} | Source: ${info.sourceGuildName}. ${ALLIANCE_NAME}.`;
         await guild.bans.create(userId, { reason });
-        console.log(`Banned ${userId} in ${guild.name}`);
-        await sleep(300); // 0.3s pause between actions
+        console.log(`[Synced] Banned ${userId} in ${guild.name} with original reason.`);
+        await sleep(300);
       } catch (err) {
-        if (err.status === 429) {
-          const retry = (err.rawError?.retry_after || 5) * 1000;
-          console.warn(`Capacity reached. Cooling down for ${retry}ms...`);
-          await sleep(retry);
-        }
+        if (err.status === 429) await sleep((err.rawError?.retry_after || 5) * 1000);
       }
     }
   }
 
   saveData(data);
-  console.log(">>> [FINISH] Reliable Sync Complete.");
+  console.log(">>> [FINISH] Smart Sync Complete.");
 }
 
-// --- 4. INITIALIZE CLIENT (ONLY ONCE!) ---
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildModeration
-  ]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildModeration]
 });
 
-// --- 5. EVENT LISTENERS ---
-
-client.once("ready", async (readyClient) => {
-  console.log(`Bot is online as ${readyClient.user.tag}`);
-  
-  // Start initial sync
-  await runFullSync(readyClient);
-  
-  // Set to run every 6 hours
-  setInterval(() => runFullSync(readyClient), 6 * 60 * 60 * 1000);
+client.once("ready", async () => {
+  console.log(`Bot online: ${client.user.tag}`);
+  await runFullSync(client);
+  setInterval(() => runFullSync(client), 6 * 60 * 60 * 1000);
 });
 
-// Live listener for new bans
+// Live Listeners remain the same but use info.reason
 client.on("guildBanAdd", async (ban) => {
   const data = loadData();
   if (data.blockedGuilds?.includes(ban.guild.id)) return;
 
+  // Store the actual reason from the audit log
   data.users[ban.user.id] = {
     sourceGuildId: ban.guild.id,
     sourceGuildName: ban.guild.name,
+    reason: ban.reason || "No reason provided",
     timestamp: Date.now()
   };
   saveData(data);
 
-  // Propagate live
   for (const [id, guild] of client.guilds.cache) {
     if (id === ban.guild.id) continue;
     try {
       await sleep(300);
       await guild.bans.create(ban.user.id, { 
-        reason: `Live Sync: ${ban.guild.name}. ${ALLIANCE_NAME}.` 
+        reason: `Original Reason: ${ban.reason || "None"} | Source: ${ban.guild.name}. ${ALLIANCE_NAME}.` 
       });
     } catch (e) {}
   }
 });
 
-// Live listener for unbans
 client.on("guildBanRemove", async (ban) => {
   const data = loadData();
   const info = data.users[ban.user.id];
-
   if (info && info.sourceGuildId === ban.guild.id) {
     delete data.users[ban.user.id];
     saveData(data);
-
     for (const [id, guild] of client.guilds.cache) {
       if (id === ban.guild.id) continue;
-      try {
-        await sleep(300);
-        await guild.bans.remove(ban.user.id, `Live Sync: Source Unban. ${ALLIANCE_NAME}.`);
-      } catch (e) {}
+      try { await sleep(300); await guild.bans.remove(ban.user.id, `Source Unban Sync.`); } catch (e) {}
     }
   }
 });
 
-// Final login
 client.login(TOKEN).catch(console.error);
