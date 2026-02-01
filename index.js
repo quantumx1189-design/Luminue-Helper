@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { Client, GatewayIntentBits, PermissionsBitField } = require("discord.js");
 
-// --- CONFIGURATION ---
+// --- 1. CONFIGURATION ---
 const DATA_FILE = "/app/data/bans.json"; 
 const MAIN_GUILD_ID = "1462251909879435454"; 
 const MOD_ROLE_NAME = "Manager";
@@ -10,9 +10,9 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const ALLIANCE_NAME = "United Group Alliance";
 const COMMAND_PREFIX = ":UGAGlobalUnban";
 
-// --- HELPERS ---
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// --- 2. DATA MANAGEMENT ---
 function loadData() {
     if (!fs.existsSync(DATA_FILE)) return { users: {}, blockedGuilds: [] };
     try { 
@@ -32,8 +32,167 @@ function saveData(data) {
     }
 }
 
-// --- CORE SYNC LOGIC ---
+// --- 3. SYNC ENGINE ---
 async function runFullSync(client) {
+    console.log(">>> [LOG] Running Scheduled Sync...");
+    const data = loadData();
+    const guilds = Array.from(client.guilds.cache.values());
+    const unbanQueue = [];
+
+    for (const guild of guilds) {
+        try {
+            const bans = await guild.bans.fetch({ limit: 1000 });
+            const currentBanIds = Array.from(bans.keys());
+
+            for (const [userId, ban] of bans) {
+                if (!data.users[userId]) {
+                    data.users[userId] = {
+                        sourceGuildId: guild.id,
+                        sourceGuildName: guild.name,
+                        reason: ban.reason || "No reason provided",
+                        timestamp: Date.now()
+                    };
+                }
+            }
+
+            for (const [userId, info] of Object.entries(data.users)) {
+                if (info.sourceGuildId === guild.id && !currentBanIds.includes(userId)) {
+                    console.log(`[Unban] Source ${guild.name} cleared ${userId}.`);
+                    unbanQueue.push(userId);
+                    delete data.users[userId];
+                }
+            }
+        } catch (err) {
+            console.error(`Fetch failed for ${guild.name}: ${err.message}`);
+        }
+    }
+
+    for (const guild of guilds) {
+        for (const userId of unbanQueue) {
+            try { 
+                await guild.bans.remove(userId, `Sync: Source Unban.`); 
+                await sleep(250); 
+            } catch (e) {}
+        }
+        
+        const existing = await guild.bans.fetch().catch(() => new Map());
+        for (const [userId, info] of Object.entries(data.users)) {
+            if (existing.has(userId) || info.sourceGuildId === guild.id) continue;
+            try {
+                const reason = `Source: ${info.sourceGuildName} | Reason: ${info.reason}. ${ALLIANCE_NAME}`;
+                await guild.bans.create(userId, { reason });
+                await sleep(250);
+            } catch (err) {
+                if (err.status === 429) await sleep((err.rawError?.retry_after || 5) * 1000);
+            }
+        }
+    }
+    saveData(data);
+}
+
+// --- 4. MAIN EXECUTION WRAPPER ---
+(async () => {
+    const client = new Client({
+        intents: [
+            GatewayIntentBits.Guilds, 
+            GatewayIntentBits.GuildModeration,
+            GatewayIntentBits.GuildMessages,
+            GatewayIntentBits.MessageContent
+        ]
+    });
+
+    // Event: Ready
+    client.once("ready", async () => {
+        console.log(`Bot active: ${client.user.tag}`);
+        await runFullSync(client);
+        setInterval(() => runFullSync(client), 6 * 60 * 60 * 1000);
+    });
+
+    // Event: Global Unban Command
+    client.on("messageCreate", async (message) => {
+        if (message.author.bot || !message.content.startsWith(COMMAND_PREFIX)) return;
+        if (message.guild.id !== MAIN_GUILD_ID) return;
+
+        const isAdmin = message.member.permissions.has(PermissionsBitField.Flags.Administrator);
+        const hasManagerRole = message.member.roles.cache.some(role => role.name === MOD_ROLE_NAME);
+
+        if (!isAdmin && !hasManagerRole) {
+            return message.reply(`❌ Access Denied. Requires **${MOD_ROLE_NAME}** role.`);
+        }
+
+        const args = message.content.trim().split(/\s+/);
+        const targetId = args[1];
+        if (!targetId) return message.reply(`⚠️ Usage: \`${COMMAND_PREFIX} <UserID>\``);
+
+        const statusMsg = await message.reply(`🔄 Processing global appeal for \`${targetId}\`...`);
+        const data = loadData();
+        let successCount = 0;
+        
+        if (data.users[targetId]) {
+            delete data.users[targetId];
+            saveData(data);
+        }
+
+        for (const guild of client.guilds.cache.values()) {
+            try {
+                await guild.bans.remove(targetId, `Global Appeal: ${message.author.tag}`);
+                successCount++;
+                await sleep(250);
+            } catch (err) {}
+        }
+
+        await statusMsg.edit(`✅ **Global Unban Complete.** User unbanned from **${successCount}** servers.`);
+    });
+
+    // Event: Live Ban
+    client.on("guildBanAdd", async (ban) => {
+        const data = loadData();
+        if (data.users[ban.user.id]) return; 
+
+        data.users[ban.user.id] = {
+            sourceGuildId: ban.guild.id,
+            sourceGuildName: ban.guild.name,
+            reason: ban.reason || "No reason",
+            timestamp: Date.now()
+        };
+        saveData(data);
+
+        for (const [id, guild] of client.guilds.cache) {
+            if (id === ban.guild.id) continue;
+            try {
+                await sleep(250);
+                await guild.bans.create(ban.user.id, { 
+                    reason: `Source: ${ban.guild.name} | Reason: ${ban.reason || "None"} | ${ALLIANCE_NAME}` 
+                });
+            } catch (e) {}
+        }
+    });
+
+    // Event: Live Unban
+    client.on("guildBanRemove", async (ban) => {
+        const data = loadData();
+        const info = data.users[ban.user.id];
+        
+        if (info && info.sourceGuildId === ban.guild.id) {
+            delete data.users[ban.user.id];
+            saveData(data);
+            for (const [id, guild] of client.guilds.cache) {
+                if (id === ban.guild.id) continue;
+                try { 
+                    await sleep(250); 
+                    await guild.bans.remove(ban.user.id, `Source Unban Sync.`); 
+                } catch (e) {}
+            }
+        }
+    });
+
+    // Login
+    try {
+        await client.login(TOKEN);
+    } catch (err) {
+        console.error("Login Error:", err.message);
+    }
+})();
     console.log(">>> [LOG] Running Scheduled Sync...");
     const data = loadData();
     const guilds = Array.from(client.guilds.cache.values());
